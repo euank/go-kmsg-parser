@@ -25,12 +25,13 @@ import (
 )
 
 func main() {
-	kmsgParser, err := kmsgparser.NewParser()
+	parser, err := kmsgparser.NewParser()
 	if err != nil {
 		log.Fatalf("unable to create parser: %v", err)
 	}
+	defer parser.Close()
 
-	kmsg := kmsgParser.Parse()
+	kmsg := parser.Parse()
 
 	for msg := range kmsg {
 		fmt.Printf("(%d) - %s: %s", msg.SequenceNumber, msg.Timestamp.Format(time.RFC3339Nano), msg.Message)

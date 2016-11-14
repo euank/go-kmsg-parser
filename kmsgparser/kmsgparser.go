@@ -39,6 +39,8 @@ type Parser interface {
 	// SetLogger sets the logger that will be used to report malformed kernel
 	// ringbuffer lines or unexpected kmsg read errors.
 	SetLogger(Logger)
+	// Close closes the underlying kmsg reader for this parser
+	Close() error
 }
 
 // Message represents a given kmsg logline, including its timestamp (as
@@ -88,6 +90,10 @@ func getBootTime() (time.Time, error) {
 
 func (p *parser) SetLogger(log Logger) {
 	p.log = log
+}
+
+func (p *parser) Close() error {
+	return p.kmsgReader.Close()
 }
 
 // Parse will read from the provided reader and provide a channel of messages
