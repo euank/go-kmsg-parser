@@ -1,5 +1,7 @@
 # go-kmsg-parser
 
+[![Build Status](https://travis-ci.org/euank/go-kmsg-parser.svg?branch=master)](https://travis-ci.org/euank/go-kmsg-parser)
+
 This repository contains a library to allow parsing the `/dev/kmsg` device in
 Linux. This device provides a read-write interface to the Linux Kernel's ring
 buffer.
