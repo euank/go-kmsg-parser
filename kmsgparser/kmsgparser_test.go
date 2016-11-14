@@ -19,29 +19,35 @@ package kmsgparser
 import (
 	"bufio"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func mockBootTime(bootTime time.Time) {
-	sysInfoFunc = func(output *syscall.Sysinfo_t) error {
-		output.Uptime = 0
-		return nil
-	}
-	// It was the dawn of time
-	timeNowFunc = func() time.Time {
-		return bootTime
-	}
+// Logger that errors on warnings and errors
+type warningAndErrorTestLogger struct {
+	t *testing.T
+}
+
+func (warningAndErrorTestLogger) Infof(string, ...interface{}) {}
+func (w warningAndErrorTestLogger) Warningf(s string, i ...interface{}) {
+	w.t.Errorf(s, i)
+}
+func (w warningAndErrorTestLogger) Errorf(s string, i ...interface{}) {
+	w.t.Errorf(s, i)
 }
 
 func TestParseMessage(t *testing.T) {
-	bootTime = time.Unix(0xb100, 0x5ea1).Round(time.Microsecond)
-	msg, err := parseMessage("6,2565,102258085667,-;docker0: port 2(vethc1bb733) entered blocking state")
+	bootTime := time.Unix(0xb100, 0x5ea1).Round(time.Microsecond)
+	p := parser{
+		log:      warningAndErrorTestLogger{t: t},
+		bootTime: bootTime,
+	}
+	msg, err := p.parseMessage("6,2565,102258085667,-;docker0: port 2(vethc1bb733) entered blocking state")
 	if err != nil {
 		t.Fatalf("error parsing: %v", err)
 	}
@@ -54,8 +60,11 @@ func TestParseMessage(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
-	bootTime = time.Unix(0xb100, 0x5ea1).Round(time.Microsecond)
-	mockBootTime(bootTime)
+	bootTime := time.Unix(0xb100, 0x5ea1).Round(time.Microsecond)
+	p := parser{
+		log:      warningAndErrorTestLogger{t: t},
+		bootTime: bootTime,
+	}
 	f, err := os.Open(filepath.Join("test_data", "sample1.kmsg"))
 	if err != nil {
 		t.Fatalf("could not find sample data: %v", err)
@@ -85,6 +94,7 @@ func TestParse(t *testing.T) {
 
 	s := bufio.NewScanner(f)
 	mockKmsg, mockKmsgInput := io.Pipe()
+	p.kmsgReader = ioutil.NopCloser(mockKmsg)
 	go func() {
 		for s.Scan() {
 			_, err := mockKmsgInput.Write(s.Bytes())
@@ -95,10 +105,7 @@ func TestParse(t *testing.T) {
 		mockKmsgInput.Close()
 	}()
 
-	lines, err := Parse(mockKmsg)
-	if err != nil {
-		t.Fatalf("err parsing: %v", err)
-	}
+	lines := p.Parse()
 
 	messages := []Message{}
 	for line := range lines {

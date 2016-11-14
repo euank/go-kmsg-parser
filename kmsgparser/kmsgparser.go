@@ -15,27 +15,36 @@ limitations under the License.
 */
 
 // Package kmsgparser implements a parser for the Linux `/dev/kmsg` format.
-// It is based on an understanding of the protocol derived from rsyslog's
-// contrib module:
+// More information about this format may be found here:
+// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
+// Some parts of it are slightly inspired by rsyslog's contrib module:
 // https://github.com/rsyslog/rsyslog/blob/v8.22.0/contrib/imkmsg/kmsg.c
 package kmsgparser
 
 import (
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// Calculate the boot time once to figure out timestamps of messages
-var bootTime time.Time
+// Parser is a parser for the kernel ring buffer found at /dev/kmsg
+type Parser interface {
+	// Parse provides a channel of messages read from the kernel ring buffer.
+	// When first called, it will read the existing ringbuffer, after which it will emit new messages as they occur.
+	Parse() <-chan Message
+	// SetLogger sets the logger that will be used to report malformed kernel
+	// ringbuffer lines or unexpected kmsg read errors.
+	SetLogger(Logger)
+}
 
-// To allow for mock/unit testing
-var sysInfoFunc = syscall.Sysinfo
-var timeNowFunc = time.Now
-
+// Message represents a given kmsg logline, including its timestamp (as
+// calculated based on offset from boot time), its possibly multi-line body,
+// and so on. More information about these mssages may be found here:
+// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
 type Message struct {
 	Priority       int
 	SequenceNumber int
@@ -43,24 +52,42 @@ type Message struct {
 	Message        string
 }
 
+func NewParser() (Parser, error) {
+	f, err := os.Open("/dev/kmsg")
+	if err != nil {
+		return nil, err
+	}
+
+	bootTime, err := getBootTime()
+	if err != nil {
+		return nil, err
+	}
+
+	return &parser{
+		log:        &StandardLogger{nil},
+		kmsgReader: f,
+		bootTime:   bootTime,
+	}, nil
+}
+
+type parser struct {
+	log        Logger
+	kmsgReader io.ReadCloser
+	bootTime   time.Time
+}
+
 func getBootTime() (time.Time, error) {
 	var sysinfo syscall.Sysinfo_t
-	err := sysInfoFunc(&sysinfo)
+	err := syscall.Sysinfo(&sysinfo)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("could not get boot time: %v", err)
 	}
 	// sysinfo only has seconds
-	return timeNowFunc().Add(-1 * (time.Duration(sysinfo.Uptime) * time.Second)), nil
+	return time.Now().Add(-1 * (time.Duration(sysinfo.Uptime) * time.Second)), nil
 }
 
-// don't log by default
-var log Logger = &StandardLogger{nil}
-
-// SetLogger sets the logger that will be used to log information about the
-// parser completing, or any unexpected read errors.
-// If not called, no messages will be output.
-func SetLogger(logger Logger) {
-	log = logger
+func (p *parser) SetLogger(log Logger) {
+	p.log = log
 }
 
 // Parse will read from the provided reader and provide a channel of messages
@@ -71,41 +98,37 @@ func SetLogger(logger Logger) {
 // A goroutine is created to process the provided reader. The goroutine will
 // exit when the given reader is closed.
 // Closing the passed in reader will cause the goroutine to exit.
-func Parse(r io.Reader) (<-chan Message, error) {
-	var err error
-	bootTime, err = getBootTime()
-	if err != nil {
-		return nil, err
-	}
+func (p *parser) Parse() <-chan Message {
 
 	output := make(chan Message, 1)
+
 	go func() {
 		defer close(output)
 		msg := make([]byte, 8192)
 		for {
 			// Each read call gives us one full message.
 			// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
-			n, err := r.Read(msg)
+			n, err := p.kmsgReader.Read(msg)
 			if err != nil {
 				if err == syscall.EPIPE {
-					log.Warningf("short read from kmsg; skipping")
+					p.log.Warningf("short read from kmsg; skipping")
 					continue
 				}
 
 				if err == io.EOF {
-					log.Infof("kmsg reader closed, shutting down")
+					p.log.Infof("kmsg reader closed, shutting down")
 					return
 				}
 
-				log.Errorf("error reading /dev/kmsg: %v", err)
+				p.log.Errorf("error reading /dev/kmsg: %v", err)
 				return
 			}
 
 			msgStr := string(msg[:n])
 
-			message, err := parseMessage(msgStr)
+			message, err := p.parseMessage(msgStr)
 			if err != nil {
-				log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
+				p.log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
 				continue
 			}
 
@@ -113,10 +136,10 @@ func Parse(r io.Reader) (<-chan Message, error) {
 		}
 	}()
 
-	return output, nil
+	return output
 }
 
-func parseMessage(input string) (Message, error) {
+func (p *parser) parseMessage(input string) (Message, error) {
 	// Format:
 	//   PRIORITY,SEQUENCE_NUM,TIMESTAMP,-;MESSAGE
 	parts := strings.SplitN(input, ";", 2)
@@ -147,11 +170,8 @@ func parseMessage(input string) (Message, error) {
 	if err != nil {
 		return Message{}, fmt.Errorf("could not parse %q as timestamp: %v", priority, err)
 	}
-
-	// Timestamp is actually offset in nanos from boot time
-	// TODO cache boot time
-
-	msgTime := bootTime.Add(time.Duration(timestampUsFromBoot) * time.Microsecond)
+	// timestamp is offset in microsecond from boottime.
+	msgTime := p.bootTime.Add(time.Duration(timestampUsFromBoot) * time.Microsecond)
 
 	return Message{
 		Priority:       prioNum,
