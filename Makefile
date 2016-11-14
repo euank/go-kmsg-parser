@@ -1,4 +1,4 @@
-.PHONY: all godmesg test
+.PHONY: all godmesg test test-deps
 
 all: godmesg
 
@@ -7,3 +7,6 @@ godmesg:
 
 test:
 	go test -v ./...
+
+test-deps:
+	go get github.com/stretchr/testify/assert

@@ -10,5 +10,6 @@ before_install:
   - 'if [ ! -e "${GOPKG_PATH}" ]; then ln -s "${TRAVIS_BUILD_DIR}" "${GOPKG_PATH}"; fi'
 script:
   - cd "$GOPKG_PATH"
+  - make test-deps
   - make test
   - make
