@@ -27,8 +27,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 // Calculate the boot time once to figure out timestamps of messages
@@ -53,6 +51,16 @@ func getBootTime() (time.Time, error) {
 	}
 	// sysinfo only has seconds
 	return timeNowFunc().Add(-1 * (time.Duration(sysinfo.Uptime) * time.Second)), nil
+}
+
+// don't log by default
+var log Logger = &StandardLogger{nil}
+
+// SetLogger sets the logger that will be used to log information about the
+// parser completing, or any unexpected read errors.
+// If not called, no messages will be output.
+func SetLogger(logger Logger) {
+	log = logger
 }
 
 // Parse will read from the provided reader and provide a channel of messages
@@ -80,16 +88,16 @@ func Parse(r io.Reader) (<-chan Message, error) {
 			n, err := r.Read(msg)
 			if err != nil {
 				if err == syscall.EPIPE {
-					glog.Warningf("short read from kmsg; skipping")
+					log.Warningf("short read from kmsg; skipping")
 					continue
 				}
 
 				if err == io.EOF {
-					glog.V(4).Infof("kmsg reader closed, shutting down")
+					log.Infof("kmsg reader closed, shutting down")
 					return
 				}
 
-				glog.Errorf("error reading /dev/kmsg: %v", err)
+				log.Errorf("error reading /dev/kmsg: %v", err)
 				return
 			}
 
@@ -97,7 +105,7 @@ func Parse(r io.Reader) (<-chan Message, error) {
 
 			message, err := parseMessage(msgStr)
 			if err != nil {
-				glog.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
+				log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
 				continue
 			}
 
