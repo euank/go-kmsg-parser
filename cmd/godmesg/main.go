@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"time"
@@ -25,12 +26,21 @@ import (
 )
 
 func main() {
+	tail := flag.Bool("t", false, "start at the tail of kmsg")
+	flag.Parse()
+
 	parser, err := kmsgparser.NewParser()
 	if err != nil {
 		log.Fatalf("unable to create parser: %v", err)
 	}
 	defer parser.Close()
 
+	if *tail {
+		err := parser.SeekEnd()
+		if err != nil {
+			log.Fatalf("could not tail: %v", err)
+		}
+	}
 	kmsg := parser.Parse()
 
 	for msg := range kmsg {

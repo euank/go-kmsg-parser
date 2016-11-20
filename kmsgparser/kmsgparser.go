@@ -33,6 +33,8 @@ import (
 
 // Parser is a parser for the kernel ring buffer found at /dev/kmsg
 type Parser interface {
+	// SeekEnd moves the parser to the end of the kmsg queue.
+	SeekEnd() error
 	// Parse provides a channel of messages read from the kernel ring buffer.
 	// When first called, it will read the existing ringbuffer, after which it will emit new messages as they occur.
 	Parse() <-chan Message
@@ -72,9 +74,14 @@ func NewParser() (Parser, error) {
 	}, nil
 }
 
+type ReadSeekCloser interface {
+	io.ReadCloser
+	io.Seeker
+}
+
 type parser struct {
 	log        Logger
-	kmsgReader io.ReadCloser
+	kmsgReader ReadSeekCloser
 	bootTime   time.Time
 }
 
@@ -94,6 +101,11 @@ func (p *parser) SetLogger(log Logger) {
 
 func (p *parser) Close() error {
 	return p.kmsgReader.Close()
+}
+
+func (p *parser) SeekEnd() error {
+	_, err := p.kmsgReader.Seek(0, os.SEEK_END)
+	return err
 }
 
 // Parse will read from the provided reader and provide a channel of messages

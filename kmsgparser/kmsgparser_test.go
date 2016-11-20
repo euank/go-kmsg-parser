@@ -18,6 +18,7 @@ package kmsgparser
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"io/ioutil"
 	"os"
@@ -94,7 +95,7 @@ func TestParse(t *testing.T) {
 
 	s := bufio.NewScanner(f)
 	mockKmsg, mockKmsgInput := io.Pipe()
-	p.kmsgReader = ioutil.NopCloser(mockKmsg)
+	p.kmsgReader = mockSeeker(ioutil.NopCloser(mockKmsg))
 	go func() {
 		for s.Scan() {
 			_, err := mockKmsgInput.Write(s.Bytes())
@@ -113,4 +114,32 @@ func TestParse(t *testing.T) {
 	}
 
 	assert.Equal(t, expectedMessages, messages)
+}
+
+func TestSeekEnd(t *testing.T) {
+	p := parser{
+		log: warningAndErrorTestLogger{t: t},
+	}
+	var mockKmsg bytes.Buffer
+	mockkmsg := mockSeeker(ioutil.NopCloser(&mockKmsg))
+	p.kmsgReader = mockkmsg
+
+	err := p.SeekEnd()
+	assert.Nil(t, err)
+	assert.Equal(t, mockkmsg.seekCalls, [][2]int64{[2]int64{0, int64(os.SEEK_END)}})
+
+}
+
+type mseeker struct {
+	io.ReadCloser
+	seekCalls [][2]int64
+}
+
+func mockSeeker(rc io.ReadCloser) *mseeker {
+	return &mseeker{ReadCloser: rc}
+}
+
+func (m *mseeker) Seek(x int64, y int) (int64, error) {
+	m.seekCalls = append(m.seekCalls, [2]int64{x, int64(y)})
+	return 0, nil
 }
