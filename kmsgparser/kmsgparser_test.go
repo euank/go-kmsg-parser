@@ -36,10 +36,10 @@ type warningAndErrorTestLogger struct {
 
 func (warningAndErrorTestLogger) Infof(string, ...interface{}) {}
 func (w warningAndErrorTestLogger) Warningf(s string, i ...interface{}) {
-	w.t.Errorf(s, i)
+	w.t.Errorf(s, i...)
 }
 func (w warningAndErrorTestLogger) Errorf(s string, i ...interface{}) {
-	w.t.Errorf(s, i)
+	w.t.Errorf(s, i...)
 }
 
 func TestParseMessage(t *testing.T) {
