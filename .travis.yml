@@ -1,6 +1,6 @@
 language: go
 go:
-- 1.11
+- 1.15
 
 branches:
   only:
@@ -9,6 +9,5 @@ branches:
 
 
 script:
-- make test-deps
 - make test
 - make
