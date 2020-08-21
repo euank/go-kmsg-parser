@@ -7,6 +7,3 @@ godmesg:
 
 test:
 	go test -v ./...
-
-test-deps:
-	go get github.com/stretchr/testify/assert
