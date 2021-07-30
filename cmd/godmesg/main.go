@@ -22,7 +22,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/euank/go-kmsg-parser/kmsgparser"
+	"github.com/euank/go-kmsg-parser/v2/kmsgparser"
 )
 
 func main() {
