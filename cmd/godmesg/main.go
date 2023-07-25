@@ -22,26 +22,34 @@ import (
 	"log"
 	"time"
 
-	"github.com/euank/go-kmsg-parser/v2/kmsgparser"
+	"github.com/euank/go-kmsg-parser/v3/kmsgparser"
 )
 
 func main() {
 	tail := flag.Bool("t", false, "start at the tail of kmsg")
+	follow := flag.Bool("w", true, "follow kmsg")
 	flag.Parse()
 
-	parser, err := kmsgparser.NewParser()
+	var opts []kmsgparser.Option
+	if !*follow {
+		opts = append(opts, kmsgparser.WithNoFollow())
+	}
+
+	parser, err := kmsgparser.NewParser(opts...)
 	if err != nil {
 		log.Fatalf("unable to create parser: %v", err)
 	}
 	defer parser.Close()
-
 	if *tail {
 		err := parser.SeekEnd()
 		if err != nil {
 			log.Fatalf("could not tail: %v", err)
 		}
 	}
-	kmsg := parser.Parse()
+	kmsg, err := parser.Parse()
+	if err != nil {
+		log.Fatalf("could not parse: %v", err)
+	}
 
 	for msg := range kmsg {
 		fmt.Printf("(%d) - %s: %s", msg.SequenceNumber, msg.Timestamp.Format(time.RFC3339Nano), msg.Message)
