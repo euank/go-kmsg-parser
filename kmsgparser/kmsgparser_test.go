@@ -126,7 +126,7 @@ func TestSeekEnd(t *testing.T) {
 
 	err := p.SeekEnd()
 	assert.Nil(t, err)
-	assert.Equal(t, mockkmsg.seekCalls, [][2]int64{[2]int64{0, int64(os.SEEK_END)}})
+	assert.Equal(t, mockkmsg.seekCalls, [][2]int64{{0, int64(io.SeekEnd)}})
 
 }
 
