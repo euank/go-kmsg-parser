@@ -20,6 +20,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/euank/go-kmsg-parser/v3/kmsgparser"
@@ -40,18 +42,34 @@ func main() {
 		log.Fatalf("unable to create parser: %v", err)
 	}
 	defer parser.Close()
+
+	// proper signal handling to demo closing the parser
+
 	if *tail {
 		err := parser.SeekEnd()
 		if err != nil {
 			log.Fatalf("could not tail: %v", err)
 		}
 	}
-	kmsg, err := parser.Parse()
-	if err != nil {
-		log.Fatalf("could not parse: %v", err)
-	}
+	msgs := make(chan kmsgparser.Message)
 
-	for msg := range kmsg {
+	ctrlC := make(chan os.Signal, 1)
+	signal.Notify(ctrlC, os.Interrupt)
+	go func() {
+		for range ctrlC {
+			fmt.Fprintln(os.Stderr, "Closing parser")
+			parser.Close()
+		}
+	}()
+
+	parseErr := make(chan error, 1)
+	go func() {
+		parseErr <- parser.Parse(msgs)
+	}()
+	for msg := range msgs {
 		fmt.Printf("(%d) - %s: %s", msg.SequenceNumber, msg.Timestamp.Format(time.RFC3339Nano), msg.Message)
+	}
+	if err := <-parseErr; err != nil {
+		fmt.Fprintf(os.Stderr, "parse exited with error: %v\n", err)
 	}
 }

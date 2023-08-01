@@ -37,10 +37,12 @@ type Parser interface {
 	// SeekEnd moves the parser to the end of the kmsg queue.
 	SeekEnd() error
 	// Parse reads from kmsg and provides a channel of messages.
+	// Parse will always close the provided channel before returning.
+	// Parse may be canceled by calling 'Close' on the parser.
 	//
-	// Parse will run a goroutine to process messages. Calling 'Close()' will
-	// result in the goroutine exiting and the returned channel being closed.
-	Parse() (<-chan Message, error)
+	// The caller should drain the channel after calling [Close]. The caller must
+	// not close the channel passed in.
+	Parse(chan<- Message) error
 
 	Close() error
 }
@@ -133,117 +135,90 @@ func (p *parser) Close() error {
 //
 // The caller should typically run 'Parse' in a goroutine.
 // Closing the passed in context will cause the goroutine to exit.
-func (p *parser) Parse() (<-chan Message, error) {
+func (p *parser) Parse(msgs chan<- Message) error {
 	// with follow (dmesg --follow), we can use go's usual way of reading thing (i.e. epoll + nonblocking IO).
 	if p.follow {
-		return p.readFollow()
+		return p.readFollow(msgs)
 	}
-	return p.readNofollow()
+	return p.readNofollow(msgs)
 }
 
-func (p *parser) readFollow() (<-chan Message, error) {
-	output := make(chan Message, 1)
-	go func() {
-		defer close(output)
-		msg := make([]byte, 8192)
-		for {
-			// Each read call gives us one full message.
-			// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
-			n, err := p.kmsgReader.Read(msg)
-			switch {
-			case err == nil:
-			case errors.Is(err, syscall.EPIPE):
-				p.log.Warningf("short read from kmsg; skipping")
-				continue
-			case errors.Is(err, io.EOF):
-				// user closed the file
-				return
-			default:
-				p.log.Warningf("unexpected error: %v", err)
-			}
-			if err != nil {
-				if err == syscall.EPIPE {
-					p.log.Warningf("short read from kmsg; skipping")
-					continue
-				}
-
-				if err == io.EOF {
-					p.log.Infof("kmsg reader closed, shutting down")
-					return
-				}
-
-				p.log.Errorf("error reading /dev/kmsg: %v", err)
-				return
-			}
-
-			msgStr := string(msg[:n])
-
-			message, err := p.parseMessage(msgStr)
-			if err != nil {
-				p.log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
-				continue
-			}
-			output <- message
+func (p *parser) readFollow(msgs chan<- Message) error {
+	defer close(msgs)
+	msg := make([]byte, 8192)
+	for {
+		// Each read call gives us one full message.
+		// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
+		n, err := p.kmsgReader.Read(msg)
+		switch {
+		case err == nil:
+		case errors.Is(err, syscall.EPIPE):
+			p.log.Warningf("short read from kmsg; skipping")
+			continue
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed):
+			// someone closed us
+			return nil
+		default:
+			return fmt.Errorf("unexpected kmsg reading error: %w", err)
 		}
-	}()
-	return output, nil
+		msgStr := string(msg[:n])
+		message, err := p.parseMessage(msgStr)
+		if err != nil {
+			return fmt.Errorf("malformed kmsg message: %w", err)
+		}
+		msgs <- message
+	}
 }
 
-func (p *parser) readNofollow() (<-chan Message, error) {
+func (p *parser) readNofollow(msgs chan<- Message) error {
+	defer close(msgs)
+
 	rawReader, err := p.kmsgReader.SyscallConn()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// we're forced to put the fd into non-blocking mode to be able to detect the
 	// end of the buffer, but to not use go's built-in epoll
 	if ctrlErr := rawReader.Control(func(fd uintptr) {
 		err = syscall.SetNonblock(int(fd), true)
 	}); ctrlErr != nil {
-		return nil, fmt.Errorf("error calling control on kmsg reader: %w", ctrlErr)
+		return fmt.Errorf("error calling control on kmsg reader: %w", ctrlErr)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("unable to set nonblocking on fd: %w", err)
+		return fmt.Errorf("unable to set nonblocking on fd: %w", err)
 	}
-	output := make(chan Message, 1)
-	go func() {
-		defer close(output)
-		msg := make([]byte, 8192)
-		for {
-			// Each read call gives us one full message.
-			// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
-			var err error
-			var n int
-			if readErr := rawReader.Read(func(fd uintptr) bool {
-				n, err = syscall.Read(int(fd), msg)
-				return true
-			}); readErr != nil {
-				p.log.Warningf("unable to call Read on RawConn: %w", readErr)
-				// probably means somehow our fd got closed, right? There's not much else it could be.
-				// Give up on it.
-				return
-			}
-			switch {
-			case err == nil:
-			case errors.Is(err, syscall.EPIPE):
-				p.log.Warningf("short read from kmsg; skipping")
-				continue
-			case errors.Is(err, syscall.EAGAIN):
-				// end of ring buffer in nofollow mode, we're done
-				return
-			default:
-				p.log.Warningf("unexpected error: %v", err)
-			}
-			msgStr := string(msg[:n])
-
-			message, err := p.parseMessage(msgStr)
-			if err != nil {
-				p.log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
-				continue
-			}
-			output <- message
+	msg := make([]byte, 8192)
+	for {
+		// Each read call gives us one full message.
+		// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
+		var err error
+		var n int
+		readErr := rawReader.Read(func(fd uintptr) bool {
+			n, err = syscall.Read(int(fd), msg)
+			return true
+		})
+		if readErr != nil && err == nil {
+			err = readErr
 		}
-	}()
-	return output, nil
+		switch {
+		case err == nil:
+		case errors.Is(err, syscall.EPIPE):
+			p.log.Warningf("short read from kmsg; skipping")
+			continue
+		case errors.Is(err, syscall.EAGAIN):
+			// end of ring buffer in nofollow mode, we're done
+			return nil
+		default:
+			return fmt.Errorf("unexpected kmsg reading error: %w", err)
+		}
+		msgStr := string(msg[:n])
+
+		message, err := p.parseMessage(msgStr)
+		if err != nil {
+			return fmt.Errorf("malformed kmsg message: %w", err)
+		}
+		msgs <- message
+	}
 }
 
 func (p *parser) parseMessage(input string) (Message, error) {
