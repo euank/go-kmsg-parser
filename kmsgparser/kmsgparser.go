@@ -22,6 +22,7 @@ limitations under the License.
 package kmsgparser
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,13 +36,14 @@ import (
 type Parser interface {
 	// SeekEnd moves the parser to the end of the kmsg queue.
 	SeekEnd() error
-	// Parse provides a channel of messages read from the kernel ring buffer.
-	// When first called, it will read the existing ringbuffer, after which it will emit new messages as they occur.
-	Parse() <-chan Message
-	// SetLogger sets the logger that will be used to report malformed kernel
-	// ringbuffer lines or unexpected kmsg read errors.
-	SetLogger(Logger)
-	// Close closes the underlying kmsg reader for this parser
+	// Parse reads from kmsg and provides a channel of messages.
+	// Parse will always close the provided channel before returning.
+	// Parse may be canceled by calling 'Close' on the parser.
+	//
+	// The caller should drain the channel after calling [Close]. The caller must
+	// not close the channel passed in.
+	Parse(chan<- Message) error
+
 	Close() error
 }
 
@@ -56,7 +58,8 @@ type Message struct {
 	Message        string
 }
 
-func NewParser() (Parser, error) {
+// NewParser constructs a new parser with the given Options.
+func NewParser(opts ...Option) (Parser, error) {
 	f, err := os.Open("/dev/kmsg")
 	if err != nil {
 		return nil, err
@@ -66,23 +69,44 @@ func NewParser() (Parser, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	return &parser{
+	p := &parser{
 		log:        &StandardLogger{nil},
 		kmsgReader: f,
 		bootTime:   bootTime,
-	}, nil
+		follow:     true,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
-type ReadSeekCloser interface {
-	io.ReadCloser
-	io.Seeker
+// Option is a configuration option for [NewParser]
+type Option func(p *parser)
+
+// WithNoFollow configures [Parser] to stop reading and close the channel when
+// it reaches the end of the kmsg buffer.
+func WithNoFollow() func(p *parser) {
+	return func(p *parser) {
+		p.follow = false
+	}
+}
+
+// WithLogger configures the [Parser]'s [Logger]
+func WithLogger(log Logger) func(p *parser) {
+	return func(p *parser) {
+		p.log = log
+	}
 }
 
 type parser struct {
 	log        Logger
-	kmsgReader ReadSeekCloser
+	kmsgReader *os.File
 	bootTime   time.Time
+	// follow indicates whether we should stop when we hit the end of the kmsg
+	// buffer, or keep reading. Similar to dmesg --follow.
+	// Default true
+	follow bool
 }
 
 func getBootTime() (time.Time, error) {
@@ -95,66 +119,106 @@ func getBootTime() (time.Time, error) {
 	return time.Now().Add(-1 * (time.Duration(sysinfo.Uptime) * time.Second)), nil
 }
 
-func (p *parser) SetLogger(log Logger) {
-	p.log = log
+func (p *parser) SeekEnd() error {
+	_, err := p.kmsgReader.Seek(0, io.SeekEnd)
+	return err
 }
 
 func (p *parser) Close() error {
 	return p.kmsgReader.Close()
 }
 
-func (p *parser) SeekEnd() error {
-	_, err := p.kmsgReader.Seek(0, io.SeekEnd)
-	return err
-}
-
-// Parse will read from the provided reader and provide a channel of messages
+// Parse reads from the provided reader and provide a channel of messages
 // parsed.
 // If the provided reader *is not* a proper Linux kmsg device, Parse might not
 // behave correctly since it relies on specific behavior of `/dev/kmsg`
 //
-// A goroutine is created to process the provided reader. The goroutine will
-// exit when the given reader is closed.
-// Closing the passed in reader will cause the goroutine to exit.
-func (p *parser) Parse() <-chan Message {
+// The caller should typically run 'Parse' in a goroutine.
+// Closing the passed in context will cause the goroutine to exit.
+func (p *parser) Parse(msgs chan<- Message) error {
+	// with follow (dmesg --follow), we can use go's usual way of reading thing (i.e. epoll + nonblocking IO).
+	if p.follow {
+		return p.readFollow(msgs)
+	}
+	return p.readNofollow(msgs)
+}
 
-	output := make(chan Message, 1)
-
-	go func() {
-		defer close(output)
-		msg := make([]byte, 8192)
-		for {
-			// Each read call gives us one full message.
-			// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
-			n, err := p.kmsgReader.Read(msg)
-			if err != nil {
-				if err == syscall.EPIPE {
-					p.log.Warningf("short read from kmsg; skipping")
-					continue
-				}
-
-				if err == io.EOF {
-					p.log.Infof("kmsg reader closed, shutting down")
-					return
-				}
-
-				p.log.Errorf("error reading /dev/kmsg: %v", err)
-				return
-			}
-
-			msgStr := string(msg[:n])
-
-			message, err := p.parseMessage(msgStr)
-			if err != nil {
-				p.log.Warningf("unable to parse kmsg message %q: %v", msgStr, err)
-				continue
-			}
-
-			output <- message
+func (p *parser) readFollow(msgs chan<- Message) error {
+	defer close(msgs)
+	msg := make([]byte, 8192)
+	for {
+		// Each read call gives us one full message.
+		// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
+		n, err := p.kmsgReader.Read(msg)
+		switch {
+		case err == nil:
+		case errors.Is(err, syscall.EPIPE):
+			p.log.Warningf("short read from kmsg; skipping")
+			continue
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed):
+			// someone closed us
+			return nil
+		default:
+			return fmt.Errorf("unexpected kmsg reading error: %w", err)
 		}
-	}()
+		msgStr := string(msg[:n])
+		message, err := p.parseMessage(msgStr)
+		if err != nil {
+			return fmt.Errorf("malformed kmsg message: %w", err)
+		}
+		msgs <- message
+	}
+}
 
-	return output
+func (p *parser) readNofollow(msgs chan<- Message) error {
+	defer close(msgs)
+
+	rawReader, err := p.kmsgReader.SyscallConn()
+	if err != nil {
+		return err
+	}
+	// we're forced to put the fd into non-blocking mode to be able to detect the
+	// end of the buffer, but to not use go's built-in epoll
+	if ctrlErr := rawReader.Control(func(fd uintptr) {
+		err = syscall.SetNonblock(int(fd), true)
+	}); ctrlErr != nil {
+		return fmt.Errorf("error calling control on kmsg reader: %w", ctrlErr)
+	}
+	if err != nil {
+		return fmt.Errorf("unable to set nonblocking on fd: %w", err)
+	}
+	msg := make([]byte, 8192)
+	for {
+		// Each read call gives us one full message.
+		// https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg
+		var err error
+		var n int
+		readErr := rawReader.Read(func(fd uintptr) bool {
+			n, err = syscall.Read(int(fd), msg)
+			return true
+		})
+		if readErr != nil && err == nil {
+			err = readErr
+		}
+		switch {
+		case err == nil:
+		case errors.Is(err, syscall.EPIPE):
+			p.log.Warningf("short read from kmsg; skipping")
+			continue
+		case errors.Is(err, syscall.EAGAIN):
+			// end of ring buffer in nofollow mode, we're done
+			return nil
+		default:
+			return fmt.Errorf("unexpected kmsg reading error: %w", err)
+		}
+		msgStr := string(msg[:n])
+
+		message, err := p.parseMessage(msgStr)
+		if err != nil {
+			return fmt.Errorf("malformed kmsg message: %w", err)
+		}
+		msgs <- message
+	}
 }
 
 func (p *parser) parseMessage(input string) (Message, error) {
