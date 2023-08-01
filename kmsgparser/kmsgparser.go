@@ -104,7 +104,7 @@ func (p *parser) Close() error {
 }
 
 func (p *parser) SeekEnd() error {
-	_, err := p.kmsgReader.Seek(0, os.SEEK_END)
+	_, err := p.kmsgReader.Seek(0, io.SeekEnd)
 	return err
 }
 
