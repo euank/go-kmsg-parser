@@ -58,7 +58,11 @@ func TestParseMessageFromSample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sample data: %v", err)
 	}
-	defer testFile.Close()
+	t.Cleanup(func() {
+		if err := testFile.Close(); err != nil {
+			t.Errorf("close sample data: %v", err)
+		}
+	})
 
 	p := parser{bootTime: time.Unix(0, 0)}
 	wantSequences := []int{1804, 1805, 2651}
