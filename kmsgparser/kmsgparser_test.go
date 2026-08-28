@@ -18,7 +18,10 @@ package kmsgparser
 
 import (
 	"bufio"
+	"bytes"
+	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,11 +109,54 @@ func TestParseMessageRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+func TestParseMessageErrorIdentifiesInvalidField(t *testing.T) {
+	tests := map[string]struct {
+		input        string
+		invalidValue string
+	}{
+		"sequence": {
+			input:        "6,invalid-sequence,102258085667,-;message",
+			invalidValue: "invalid-sequence",
+		},
+		"timestamp": {
+			input:        "6,2565,invalid-timestamp,-;message",
+			invalidValue: "invalid-timestamp",
+		},
+	}
+
+	p := parser{}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := p.parseMessage(test.input)
+			if err == nil {
+				t.Fatal("expected parsing to fail")
+			}
+			if !strings.Contains(err.Error(), test.invalidValue) {
+				t.Fatalf("error %q does not identify invalid value %q", err, test.invalidValue)
+			}
+		})
+	}
+}
+
 func TestStandardLoggerWithNilLogger(t *testing.T) {
 	logger := &StandardLogger{}
 	logger.Warningf("warning")
 	logger.Infof("information")
 	logger.Errorf("error")
+}
+
+func TestStandardLoggerFormatting(t *testing.T) {
+	var output bytes.Buffer
+	logger := &StandardLogger{Logger: log.New(&output, "", 0)}
+
+	logger.Warningf("warning %d", 1)
+	logger.Infof("information %d", 2)
+	logger.Errorf("error %d", 3)
+
+	want := "[WARNING] warning 1\n[INFO] information 2\n[ERROR] error 3\n"
+	if got := output.String(); got != want {
+		t.Fatalf("unexpected log output:\n%s", got)
+	}
 }
 
 func assertEqual[T comparable](t *testing.T, lhs, rhs T) {
