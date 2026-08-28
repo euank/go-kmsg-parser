@@ -253,12 +253,12 @@ func (p *parser) parseMessage(input string) (Message, error) {
 
 	sequenceNum, err := strconv.Atoi(sequence)
 	if err != nil {
-		return Message{}, fmt.Errorf("could not parse %q as sequence number: %v", priority, err)
+		return Message{}, fmt.Errorf("could not parse %q as sequence number: %v", sequence, err)
 	}
 
 	timestampUsFromBoot, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
-		return Message{}, fmt.Errorf("could not parse %q as timestamp: %v", priority, err)
+		return Message{}, fmt.Errorf("could not parse %q as timestamp: %v", timestamp, err)
 	}
 	// timestamp is offset in microsecond from boottime.
 	msgTime := p.bootTime.Add(time.Duration(timestampUsFromBoot) * time.Microsecond)

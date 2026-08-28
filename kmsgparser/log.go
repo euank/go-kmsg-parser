@@ -36,19 +36,19 @@ func (s *StandardLogger) Warningf(fmt string, args ...interface{}) {
 	if s.Logger == nil {
 		return
 	}
-	s.Printf("[WARNING] "+fmt, args)
+	s.Printf("[WARNING] "+fmt, args...)
 }
 
 func (s *StandardLogger) Infof(fmt string, args ...interface{}) {
 	if s.Logger == nil {
 		return
 	}
-	s.Printf("[INFO] "+fmt, args)
+	s.Printf("[INFO] "+fmt, args...)
 }
 
 func (s *StandardLogger) Errorf(fmt string, args ...interface{}) {
 	if s.Logger == nil {
 		return
 	}
-	s.Printf("[INFO] "+fmt, args)
+	s.Printf("[ERROR] "+fmt, args...)
 }
