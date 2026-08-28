@@ -142,7 +142,7 @@ func (p *parser) Close() error {
 // behave correctly since it relies on specific behavior of `/dev/kmsg`
 //
 // The caller should typically run 'Parse' in a goroutine.
-// Closing the passed in context will cause the goroutine to exit.
+// Calling [Parser.Close] will cause Parse to return and close the channel.
 func (p *parser) Parse(msgs chan<- Message) error {
 	// with follow (dmesg --follow), we can use go's usual way of reading thing (i.e. epoll + nonblocking IO).
 	if p.follow {
