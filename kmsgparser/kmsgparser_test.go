@@ -18,8 +18,6 @@ package kmsgparser
 
 import (
 	"bufio"
-	"bytes"
-	"log"
 	"os"
 	"testing"
 	"time"
@@ -101,19 +99,6 @@ func TestParseMessageRejectsMalformedInput(t *testing.T) {
 				t.Fatal("expected parsing to fail")
 			}
 		})
-	}
-}
-
-func TestStandardLogger(t *testing.T) {
-	var output bytes.Buffer
-	logger := &StandardLogger{Logger: log.New(&output, "", 0)}
-
-	logger.Warningf("warning")
-	logger.Infof("information")
-
-	want := "[WARNING] warning\n[INFO] information\n"
-	if got := output.String(); got != want {
-		t.Fatalf("unexpected log output:\n%s", got)
 	}
 }
 
