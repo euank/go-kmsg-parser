@@ -30,6 +30,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Parser is a parser for the kernel ring buffer found at /dev/kmsg
@@ -109,14 +111,20 @@ type parser struct {
 	follow bool
 }
 
-func getBootTime() (time.Time, error) {
-	var sysinfo syscall.Sysinfo_t
-	err := syscall.Sysinfo(&sysinfo)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("could not get boot time: %v", err)
+func getUptime() (time.Duration, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts); err != nil {
+		return 0, err
 	}
-	// sysinfo only has seconds
-	return time.Now().Add(-1 * (time.Duration(sysinfo.Uptime) * time.Second)), nil
+	return time.Duration(ts.Sec)*time.Second + time.Duration(ts.Nsec), nil
+}
+
+func getBootTime() (time.Time, error) {
+	uptime, err := getUptime()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("could not get boot time: %w", err)
+	}
+	return time.Now().Add(-uptime), nil
 }
 
 func (p *parser) SeekEnd() error {
