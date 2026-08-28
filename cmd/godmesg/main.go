@@ -41,7 +41,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("unable to create parser: %v", err)
 	}
-	defer parser.Close()
+	defer func() {
+		_ = parser.Close()
+	}()
 
 	// proper signal handling to demo closing the parser
 
@@ -58,7 +60,7 @@ func main() {
 	go func() {
 		for range ctrlC {
 			fmt.Fprintln(os.Stderr, "Closing parser")
-			parser.Close()
+			_ = parser.Close()
 		}
 	}()
 
