@@ -17,6 +17,8 @@ limitations under the License.
 package kmsgparser
 
 import (
+	"bufio"
+	"os"
 	"testing"
 	"time"
 )
@@ -49,6 +51,66 @@ func TestParseMessage(t *testing.T) {
 	assertEqual(t, msg.Priority, 6)
 	assertEqual(t, msg.SequenceNumber, 2565)
 	assertEqual(t, msg.Timestamp, bootTime.Add(102258085667*time.Microsecond))
+}
+
+func TestParseMessageFromSample(t *testing.T) {
+	testFile, err := os.Open("test_data/sample1.kmsg")
+	if err != nil {
+		t.Fatalf("open sample data: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := testFile.Close(); err != nil {
+			t.Errorf("close sample data: %v", err)
+		}
+	})
+
+	p := parser{bootTime: time.Unix(0, 0)}
+	wantSequences := []int{1804, 1805, 2651}
+	scanner := bufio.NewScanner(testFile)
+	var gotSequences []int
+	for scanner.Scan() {
+		msg, err := p.parseMessage(scanner.Text())
+		if err != nil {
+			t.Fatalf("parse sample message: %v", err)
+		}
+		gotSequences = append(gotSequences, msg.SequenceNumber)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read sample data: %v", err)
+	}
+
+	if len(gotSequences) != len(wantSequences) {
+		t.Fatalf("parsed %d messages, want %d", len(gotSequences), len(wantSequences))
+	}
+	for i := range wantSequences {
+		assertEqual(t, gotSequences[i], wantSequences[i])
+	}
+}
+
+func TestParseMessageRejectsMalformedInput(t *testing.T) {
+	tests := map[string]string{
+		"missing separator": "6,2565,102258085667,-",
+		"missing metadata":  "6,2565;message",
+		"invalid priority":  "invalid,2565,102258085667,-;message",
+		"invalid sequence":  "6,invalid,102258085667,-;message",
+		"invalid timestamp": "6,2565,invalid,-;message",
+	}
+
+	p := parser{}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := p.parseMessage(input); err == nil {
+				t.Fatal("expected parsing to fail")
+			}
+		})
+	}
+}
+
+func TestStandardLoggerWithNilLogger(t *testing.T) {
+	logger := &StandardLogger{}
+	logger.Warningf("warning")
+	logger.Infof("information")
+	logger.Errorf("error")
 }
 
 func assertEqual[T comparable](t *testing.T, lhs, rhs T) {
