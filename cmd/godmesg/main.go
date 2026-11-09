@@ -24,7 +24,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/euank/go-kmsg-parser/v3/kmsgparser"
+	"github.com/euank/go-kmsg-parser/v4/kmsgparser"
 )
 
 func main() {
