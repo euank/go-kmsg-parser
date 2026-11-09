@@ -155,6 +155,7 @@ func (p *parser) Parse(msgs chan<- Message) error {
 // drain the channel.
 func (p *parser) ParseContext(ctx context.Context, msgs chan<- Message) error {
 	if ctx.Err() != nil {
+		_ = p.Close()
 		close(msgs)
 		return nil
 	}
