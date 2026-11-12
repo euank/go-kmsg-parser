@@ -1,4 +1,4 @@
-module github.com/euank/go-kmsg-parser/v3
+module github.com/euank/go-kmsg-parser/v4
 
 go 1.25.0
 

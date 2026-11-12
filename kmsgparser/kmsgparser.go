@@ -22,6 +22,7 @@ limitations under the License.
 package kmsgparser
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -42,9 +43,11 @@ type Parser interface {
 	// Parse will always close the provided channel before returning.
 	// Parse may be canceled by calling 'Close' on the parser.
 	//
-	// The caller should drain the channel after calling [Close]. The caller must
-	// not close the channel passed in.
+	// The caller should drain the channel after calling [Close], or use
+	// [Parser.ParseContext] instead. The caller must not close the channel passed in.
 	Parse(chan<- Message) error
+	// ParseContext is like Parse, but also returns when the context is done.
+	ParseContext(context.Context, chan<- Message) error
 
 	Close() error
 }
@@ -153,14 +156,28 @@ func (p *parser) Close() error {
 // The caller should typically run 'Parse' in a goroutine.
 // Calling [Parser.Close] will cause Parse to return and close the channel.
 func (p *parser) Parse(msgs chan<- Message) error {
-	// with follow (dmesg --follow), we can use go's usual way of reading thing (i.e. epoll + nonblocking IO).
-	if p.follow {
-		return p.readFollow(msgs)
-	}
-	return p.readNofollow(msgs)
+	return p.ParseContext(context.Background(), msgs)
 }
 
-func (p *parser) readFollow(msgs chan<- Message) error {
+// ParseContext is like Parse, but also returns and closes the channel when ctx
+// is done. The parser is closed in that case, and the caller doesn't need to
+// drain the channel.
+func (p *parser) ParseContext(ctx context.Context, msgs chan<- Message) error {
+	if ctx.Err() != nil {
+		_ = p.Close()
+		close(msgs)
+		return nil
+	}
+	stop := context.AfterFunc(ctx, func() { _ = p.Close() })
+	defer stop()
+	// with follow (dmesg --follow), we can use go's usual way of reading thing (i.e. epoll + nonblocking IO).
+	if p.follow {
+		return p.readFollow(ctx, msgs)
+	}
+	return p.readNofollow(ctx, msgs)
+}
+
+func (p *parser) readFollow(ctx context.Context, msgs chan<- Message) error {
 	defer close(msgs)
 	msg := make([]byte, 8192)
 	for {
@@ -187,11 +204,15 @@ func (p *parser) readFollow(msgs chan<- Message) error {
 			}
 			return fmt.Errorf("malformed kmsg message: %w", err)
 		}
-		msgs <- message
+		select {
+		case msgs <- message:
+		case <-ctx.Done():
+			return nil
+		}
 	}
 }
 
-func (p *parser) readNofollow(msgs chan<- Message) error {
+func (p *parser) readNofollow(ctx context.Context, msgs chan<- Message) error {
 	defer close(msgs)
 
 	rawReader, err := p.kmsgReader.SyscallConn()
@@ -230,6 +251,9 @@ func (p *parser) readNofollow(msgs chan<- Message) error {
 			// end of ring buffer in nofollow mode, we're done
 			return nil
 		default:
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("unexpected kmsg reading error: %w", err)
 		}
 		msgStr := string(msg[:n])
@@ -242,7 +266,11 @@ func (p *parser) readNofollow(msgs chan<- Message) error {
 			}
 			return fmt.Errorf("malformed kmsg message: %w", err)
 		}
-		msgs <- message
+		select {
+		case msgs <- message:
+		case <-ctx.Done():
+			return nil
+		}
 	}
 }
 
