@@ -94,6 +94,14 @@ func WithNoFollow() func(p *parser) {
 	}
 }
 
+// WithSkipMalformedMessages configures [Parser] to log and skip a message that
+// fails to parse, instead of returning an error and closing the channel.
+func WithSkipMalformedMessages() func(p *parser) {
+	return func(p *parser) {
+		p.skipMalformed = true
+	}
+}
+
 // WithLogger configures the [Parser]'s [Logger]
 func WithLogger(log Logger) func(p *parser) {
 	return func(p *parser) {
@@ -108,7 +116,8 @@ type parser struct {
 	// follow indicates whether we should stop when we hit the end of the kmsg
 	// buffer, or keep reading. Similar to dmesg --follow.
 	// Default true
-	follow bool
+	follow        bool
+	skipMalformed bool
 }
 
 func getUptime() (time.Duration, error) {
@@ -172,6 +181,10 @@ func (p *parser) readFollow(msgs chan<- Message) error {
 		msgStr := string(msg[:n])
 		message, err := p.parseMessage(msgStr)
 		if err != nil {
+			if p.skipMalformed {
+				p.log.Warningf("malformed kmsg message; skipping: %v", err)
+				continue
+			}
 			return fmt.Errorf("malformed kmsg message: %w", err)
 		}
 		msgs <- message
@@ -223,6 +236,10 @@ func (p *parser) readNofollow(msgs chan<- Message) error {
 
 		message, err := p.parseMessage(msgStr)
 		if err != nil {
+			if p.skipMalformed {
+				p.log.Warningf("malformed kmsg message; skipping: %v", err)
+				continue
+			}
 			return fmt.Errorf("malformed kmsg message: %w", err)
 		}
 		msgs <- message
